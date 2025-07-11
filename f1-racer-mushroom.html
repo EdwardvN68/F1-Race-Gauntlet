@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>F1 Racer: Monster Gauntlet</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body, html { background: black; overflow: hidden; height: 100%; font-family: monospace; }
+    canvas { display: block; margin: auto; background: #111; }
+
+    #ui, #gameOver, #startMenu, #howToPlay, #countdown {
+      position: absolute; z-index: 10;
+      color: rgb(255, 42, 0); font-size: 16px;
+    }
+
+    #ui {
+      top: 10px; left: 10px;
+    }
+
+    #gameOver, #startMenu, #howToPlay {
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      background: #111;
+      padding: 20px;
+      text-align: center;
+      border: 2px solid rgb(255, 17, 0);
+      display: none;
+    }
+
+    button {
+      font-family: monospace;
+      font-size: 16px;
+      margin: 8px;
+      padding: 8px 16px;
+      background: rgb(255, 47, 0);
+      border: none;
+      color: black;
+      cursor: pointer;
+    }
+
+    #howToPlay ul {
+      text-align: left;
+      padding: 0 10px;
+      color: white;
+    }
+
+    #countdown {
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 72px;
+      font-weight: bold;
+      color: white;
+      display: none;
+      animation: fade 1s ease-in-out;
+    }
+
+    @keyframes fade {
+      0% { opacity: 0; }
+      30% { opacity: 1; }
+      100% { opacity: 0; }
+    }
+  </style>
+</head>
+<body>
+
+<canvas id="game" width="360" height="600"></canvas>
+<audio id="crashSound" src="Assets/Laugh.wav" preload="auto"></audio>
+
+<!-- UI Overlays -->
+<div id="ui">Stage: <span id="stage">1</span> | Score: <span id="score">0</span></div>
+<div id="startMenu">
+  <h2>🏎️ F1 Racer: Monster Gauntlet</h2>
+  <button onclick="startGame()">Start Game</button>
+  <button onclick="showHowTo()">How to Play</button>
+</div>
+<div id="howToPlay">
+  <h3>How to Play</h3>
+  <ul>
+    <li>🍄 Mushroom = Speed Up</li>
+    <li>🥦 Broccoli = Slow Down</li>
+    <li>👹 Monster = Avoid it! One hit = Game Over</li>
+    <li>🧱 Bricks = Crash = Game Over</li>
+    <li>⏱️ Each stage = 30 seconds</li>
+  </ul>
+  <button onclick="hideHowTo()">Back</button>
+</div>
+<div id="countdown"></div>
+<div id="gameOver"></div>
+
+<script>
+const crashSound = document.getElementById('crashSound');
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+const ui = document.getElementById('ui');
+const stageUI = document.getElementById('stage');
+const scoreUI = document.getElementById('score');
+const startMenu = document.getElementById('startMenu');
+const howTo = document.getElementById('howToPlay');
+const gameOverDiv = document.getElementById('gameOver');
+const countdown = document.getElementById('countdown');
+
+const LANES = [10, 130, 250];
+const MAX_STAGES = 10;
+const STAGE_TIME = 30000;
+
+let keys = {}, images = {}, game, player;
+let stageStartTime = 0;
+let monsterTriggerTime = 0;
+let monsterY = -60;
+let monsterActive = false;
+let gameRunning = false;
+
+document.addEventListener('keydown', e => keys[e.key] = true);
+document.addEventListener('keyup', e => keys[e.key] = false);
+canvas.addEventListener('touchstart', handleTouch);
+canvas.addEventListener('touchend', () => { keys["ArrowLeft"] = false; keys["ArrowRight"] = false; });
+
+function handleTouch(e) {
+  const x = e.touches[0].clientX;
+  if (x < canvas.width / 2) keys["ArrowLeft"] = true;
+  else keys["ArrowRight"] = true;
+}
+
+function preloadAssets(callback) {
+  const files = {
+    bricks: 'Assets/Bricks.jpg',
+    mushroom: 'Assets/Mushroom.png',
+    broccoli: 'Assets/Broccoli.png',
+    racecar: 'Assets/Racecar.png',
+    monster: 'Assets/Monster.png'
+  };
+  let loaded = 0;
+  for (let key in files) {
+    const img = new Image();
+    img.src = files[key];
+    img.onload = () => {
+      images[key] = img;
+      loaded++;
+      if (loaded === Object.keys(files).length) callback();
+    };
+  }
+}
+
+function showHowTo() {
+  startMenu.style.display = 'none';
+  howTo.style.display = 'block';
+}
+
+function hideHowTo() {
+  howTo.style.display = 'none';
+  startMenu.style.display = 'block';
+}
+
+function startGame() {
+  game = {
+    stage: 1,
+    totalScore: 0,
+    currentScore: 0,
+    speed: 2,
+    entities: [],
+    prizes: [],
+    finished: false,
+    scoreList: []
+  };
+  player = {
+    x: canvas.width / 2 - 20,
+    y: canvas.height - 80,
+    width: 40,
+    height: 60
+  };
+  gameRunning = true;
+  startMenu.style.display = 'none';
+  ui.style.display = 'block';
+  showCountdown(() => startStage());
+}
+
+function showCountdown(callback) {
+  if (game.stage !== 1) return callback(); // skip for later stages
+  const steps = ['3', '2', '1', 'GO!'];
+  let i = 0;
+  countdown.style.display = 'block';
+  function next() {
+    if (i < steps.length) {
+      countdown.textContent = steps[i++];
+      countdown.style.animation = 'none';
+      void countdown.offsetWidth; // force reflow
+      countdown.style.animation = 'fade 1s ease-in-out';
+      setTimeout(next, 1000);
+    } else {
+      countdown.style.display = 'none';
+      callback();
+    }
+  }
+  next();
+}
+
+function startStage() {
+  game.entities = [];
+  game.prizes = [];
+  game.currentScore = 0;
+  game.lastBonusSecond = 0; // ← add this line
+  stageStartTime = Date.now();
+  game.monsterTriggers = [
+    Math.floor(Math.random() * 12000) + 3000,
+    Math.floor(Math.random() * 12000) + 16000
+  ];
+  game.monsters = [
+    { y: -60, active: false, hit: false, speedMultiplier: 2 },
+    { y: -60, active: false, hit: false, speedMultiplier: 2.5 }
+  ];
+  monsterY = -60;
+  monsterActive = false;
+  stageUI.textContent = game.stage;
+  requestAnimationFrame(loop);
+}
+
+function drawPlayer() {
+  ctx.drawImage(images.racecar, player.x, player.y, player.width, player.height);
+}
+
+function drawEntity(img, e) {
+  ctx.drawImage(img, e.x, e.y, 40, 40);
+}
+
+function drawMonster(y) {
+  ctx.drawImage(images.monster, canvas.width / 2 - 25, y, 50, 50);
+}
+
+function collision(a, b) {
+  return a.x < b.x + b.width &&
+         a.x + a.width > b.x &&
+         a.y < b.y + b.height &&
+         a.y + a.height > b.y;
+}
+
+function finishLineReached() {
+  return (Date.now() - stageStartTime) >= STAGE_TIME;
+}
+
+function advanceStage() {
+  game.totalScore += game.currentScore;
+  game.scoreList.push(game.currentScore);
+  if (game.stage >= MAX_STAGES) {
+    game.finished = true;
+    showFinalScore();
+  } else {
+    game.stage++;
+    game.speed = 2 + game.stage * 0.5;
+    startStage();
+  }
+}
+
+function showFinalScore() {
+  gameRunning = false;
+  ui.style.display = 'none';
+  gameOverDiv.style.display = 'block';
+  gameOverDiv.innerHTML = `<h3>🏁 Race Complete</h3>
+    <p>Stage Scores: ${game.scoreList.join(', ')}</p>
+    <p>Total Score: ${game.totalScore}</p>
+    <button onclick="resetGame()">Play Again</button>`;
+}
+
+function resetGame() {
+  gameOverDiv.style.display = 'none';
+  startMenu.style.display = 'block';
+}
+
+function endGame() {
+  gameRunning = false;
+  ui.style.display = 'none';
+  crashSound.currentTime = 0;
+  crashSound.play();
+  gameOverDiv.style.display = 'block';
+  gameOverDiv.innerHTML = `<h3>💥 Crash!</h3>
+    <p>Stage ${game.stage} score lost.</p>
+    <p>Completed Stages: ${game.scoreList.join(', ')}</p>
+    <p>Total Score: ${game.totalScore}</p>
+    <button onclick="resetGame()">Try Again</button>`;
+}
+
+function loop() {
+  ctx.fillStyle = "#111";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  if (keys["ArrowLeft"]) player.x -= 4;
+  if (keys["ArrowRight"]) player.x += 4;
+  player.x = Math.max(0, Math.min(canvas.width - player.width, player.x));
+  drawPlayer();
+
+  for (let obs of game.entities) {
+    obs.y += game.speed;
+    drawEntity(images.bricks, obs);
+    if (collision(player, obs)) return endGame();
+  }
+  game.entities = game.entities.filter(e => e.y < canvas.height);
+
+  for (let prize of game.prizes) {
+    prize.y += game.speed;
+    drawEntity(prize.type === "mushroom" ? images.mushroom : images.broccoli, prize);
+    if (collision(player, prize)) {
+      if (prize.type === "mushroom") {
+      game.speed += 0.4;
+      game.currentScore += 150;
+    } else if (prize.type === "broccoli") {
+      game.speed = Math.max(1.5, game.speed - 0.2);
+      game.currentScore += 50;
+    }
+    prize.hit = true;
+  }
+}
+  game.prizes = game.prizes.filter(p => p.y < canvas.height && !p.hit);
+
+  const elapsed = Date.now() - stageStartTime;
+const secondsElapsed = Math.floor(elapsed / 1000);
+if (!game.lastBonusSecond || secondsElapsed > game.lastBonusSecond) {
+  game.lastBonusSecond = secondsElapsed;
+  if (secondsElapsed % 5 === 0) {
+    game.currentScore += 25;
+  }
+}
+
+for (let i = 0; i < game.monsters.length; i++) {
+  const trigger = game.monsterTriggers[i];
+  const monster = game.monsters[i];
+
+  if (!monster.hit && elapsed > trigger) {
+    monster.active = true;
+    monster.y += game.speed * monster.speedMultiplier;
+    drawMonster(monster.y);
+    if (collision(player, { x: canvas.width / 2 - 25, y: monster.y, width: 50, height: 50 })) {
+      monster.hit = true;
+      return endGame();
+    }
+  }
+}
+
+  if (Math.random() < 0.03) {
+    game.entities.push({ x: LANES[Math.floor(Math.random() * LANES.length)], y: -40, width: 40, height: 40 });
+  }
+
+  if (Math.random() < 0.015) {
+  let type;
+  if (game.stage <= 2) {
+    type = 'mushroom'; // no broccoli in first 2 stages
+  } else {
+    type = Math.random() < (0.6 + game.stage * 0.05) ? 'mushroom' : 'broccoli';
+  }
+  game.prizes.push({ x: LANES[Math.floor(Math.random() * LANES.length)], y: -40, width: 40, height: 40, type });
+}
+
+  scoreUI.textContent = game.totalScore + game.currentScore;
+
+  if (finishLineReached()) {
+    advanceStage();
+    return;
+  }
+
+  if (gameRunning) requestAnimationFrame(loop);
+}
+
+preloadAssets(() => {
+  startMenu.style.display = 'block';
+});
+</script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
